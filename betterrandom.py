@@ -14,6 +14,8 @@ Design:
      sources into every read with SHA3-512 and XORs the result with a fresh
      OS read. It is a hedge against a hypothetical flawed OS generator and
      it can never be weaker than the OS generator alone. It is much slower.
+  5. The whole random.Random API is available as `rng`, a random.Random
+     subclass that only replaces the primitives. It is created on first use.
 
 Python support: 3.8 and newer. Newer interpreters get extra features,
 detected at runtime, never at the cost of compatibility:
@@ -30,10 +32,19 @@ import os
 # PEP 810 (Python 3.15): modules listed here are imported lazily, on first
 # use. Older interpreters simply ignore this list, so it is harmless there.
 # Only plain "import x" statements are covered, hence no "from x import y".
-__lazy_modules__ = ["argparse", "array", "hashlib", "secrets", "threading", "time"]
+__lazy_modules__ = [
+    "argparse",
+    "array",
+    "bisect",
+    "hashlib",
+    "secrets",
+    "threading",
+    "time",
+]
 
 import argparse
 import array
+import bisect
 import hashlib
 import secrets
 import threading
@@ -60,12 +71,17 @@ __all__ = [
     "betterRandom",
     "better_random_float",
     "better_random_many",
+    "better_randrange",
     "better_choice",
+    "better_choices",
+    "better_sample",
     "better_shuffle",
+    "BetterSystemRandom",
+    "rng",
     "ENTROPY_SOURCES",
     "MISSING",
 ]
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 _WORD_BYTES = 8
 _WORD_RANGE = 1 << (8 * _WORD_BYTES)  # 2**64
@@ -194,11 +210,35 @@ def _bounded_wide(n: int, read: Callable[[int], bytes]) -> int:
 def _as_int(value: object) -> int:
     """Slow path of argument checking: accept __index__ types, reject bool."""
     if isinstance(value, bool):
-        raise TypeError("low and high must be integers, not bool")
+        raise TypeError("integer arguments are required, not bool")
     try:
         return operator.index(value)  # type: ignore[arg-type]
     except TypeError:
-        raise TypeError("low and high must be integers") from None
+        raise TypeError("integer arguments are required") from None
+
+
+def _as_weight(value: object) -> int:
+    """Validate one weight: a non negative integer, never a float."""
+    if isinstance(value, bool):
+        raise TypeError("weights must be integers, not bool")
+    try:
+        weight = operator.index(value)  # type: ignore[arg-type]
+    except TypeError:
+        raise TypeError(
+            "weights must be integers (scale floats to integers for exact results)"
+        ) from None
+    if weight < 0:
+        raise ValueError("weights must not be negative")
+    return weight
+
+
+def _range_len(start: int, stop: int, step: int) -> int:
+    """Return len(range(start, stop, step)) without the sys.maxsize limit."""
+    if step == 0:
+        raise ValueError("step must not be zero")
+    if step > 0:
+        return max(0, (stop - start + step - 1) // step)
+    return max(0, (start - stop - step - 1) // -step)
 
 
 # --- The generator -----------------------------------------------------------
@@ -289,6 +329,72 @@ class BetterRandom:
             j = below(i + 1)
             seq[i], seq[j] = seq[j], seq[i]
 
+    def randrange(
+        self, start: int, stop: Optional[int] = None, step: int = 1
+    ) -> int:
+        """Return a random item of range(start, stop, step), like random.randrange.
+
+        Unlike randint the stop value is excluded. Works for ranges of any size.
+        """
+        if stop is None:
+            start, stop = 0, start
+        start, stop, step = _as_int(start), _as_int(stop), _as_int(step)
+        count = _range_len(start, stop, step)
+        if count <= 0:
+            raise ValueError("empty range for randrange()")
+        return start + step * self._below(count)
+
+    def sample(self, population: Sequence[T], k: int) -> List[T]:
+        """Return k distinct elements of a sequence, in random order.
+
+        A partial Fisher-Yates over virtual positions: it needs O(k) memory,
+        never copies the population, and every ordered selection of k
+        elements is equally likely.
+        """
+        if isinstance(population, (set, frozenset, dict)):
+            raise TypeError("population must be a sequence")
+        n = len(population)
+        k = operator.index(k)
+        if not 0 <= k <= n:
+            raise ValueError("sample larger than population or is negative")
+        below = self._below
+        moved = {}  # position -> index of the element currently stored there
+        out = []
+        for i in range(k):
+            j = i + below(n - i)
+            chosen = moved.get(j, j)
+            moved[j] = moved.get(i, i)
+            out.append(population[chosen])
+        return out
+
+    def choices(
+        self, population: Sequence[T], weights: Sequence[int], k: int = 1
+    ) -> List[T]:
+        """Return k elements drawn with replacement, with integer weights.
+
+        random.choices works on floating point weights and so cannot be exactly
+        proportional. Here the weights are integers and the draw is an exact
+        uniform integer in [0, sum(weights)), so each element is chosen with
+        probability exactly weight / sum(weights). Zero weights are allowed.
+        """
+        if len(weights) != len(population):
+            raise ValueError("population and weights must have the same length")
+        cumulative = []
+        total = 0
+        for weight in weights:
+            total += _as_weight(weight)
+            cumulative.append(total)
+        if total <= 0:
+            raise ValueError("the total of the weights must be greater than zero")
+        k = operator.index(k)
+        if k < 0:
+            raise ValueError("k must not be negative")
+        bisect_right = bisect.bisect_right
+        return [
+            population[bisect_right(cumulative, r)]
+            for r in self.randints(k, 0, total - 1)
+        ]
+
 
 # --- Module level API --------------------------------------------------------
 
@@ -297,11 +403,140 @@ _DEFAULT = BetterRandom()
 better_random = _DEFAULT.randint
 better_random_many = _DEFAULT.randints
 better_random_float = _DEFAULT.random
+better_randrange = _DEFAULT.randrange
 better_choice = _DEFAULT.choice
+better_choices = _DEFAULT.choices
+better_sample = _DEFAULT.sample
 better_shuffle = _DEFAULT.shuffle
 
 # CamelCase alias, as in the project name.
 betterRandom = better_random
+
+
+# --- The whole standard library API, on top of betterRandom -------------------
+#
+# BetterSystemRandom is a random.Random subclass, the same idea as
+# random.SystemRandom. Only the primitives are replaced (random, getrandbits,
+# randbytes and _randbelow), so every method of random.Random is available
+# (uniform, gauss, expovariate, betavariate, binomialvariate, ...) without
+# re-implementing a single algorithm. randrange, shuffle, sample and choice
+# reach the unbiased range reduction of this module through _randbelow.
+#
+# The class is built on first use, through the module level __getattr__ below,
+# so that importing betterrandom does not import the random module.
+
+
+def _build_system_random():
+    import random as _std
+
+    class BetterSystemRandom(_std.Random):
+        """Drop in replacement for random.Random, backed by betterRandom.
+
+        The whole random.Random API is available. The integer functions
+        (randint, randrange, choice, shuffle, sample) inherit the exact
+        uniformity of betterRandom. The continuous distributions are the
+        standard library algorithms running on 53 bit uniform floats, so they
+        are as good as the standard library's and not better.
+
+        Differences from random.Random, all because there is no seed:
+          - seed(value) raises NotImplementedError, it never ignores a seed.
+          - getstate() and setstate() raise NotImplementedError.
+          - gauss() calls normalvariate(), because the standard gauss() keeps
+            a value between calls, which is state and is not thread safe.
+        """
+
+        def __init__(self, paranoid: bool = False) -> None:
+            self._core = BetterRandom(paranoid)
+            super().__init__()  # calls self.seed(None), which is a no-op here
+
+        def __repr__(self) -> str:
+            return "BetterSystemRandom(paranoid=%r)" % self._core.paranoid
+
+        @property
+        def paranoid(self) -> bool:
+            return self._core.paranoid
+
+        # The primitives. Everything else in random.Random is built on these.
+
+        def random(self) -> float:
+            return self._core.random()
+
+        def getrandbits(self, k: int) -> int:
+            k = operator.index(k)
+            if k < 0:
+                raise ValueError("number of bits must be non-negative")
+            if k == 0:
+                return 0
+            nbytes = (k + 7) // 8
+            return int.from_bytes(self._core._read(nbytes), "big") >> (nbytes * 8 - k)
+
+        def randbytes(self, n: int) -> bytes:
+            n = operator.index(n)
+            if n < 0:
+                raise ValueError("number of bytes must be non-negative")
+            return self._core._read(n)
+
+        def _randbelow(self, n: int) -> int:
+            # random.Random.__init_subclass__ keeps this method when a subclass
+            # defines it (Python 3.8 to 3.15), so randrange, shuffle, sample and
+            # choice all use the unbiased range reduction of betterRandom.
+            if n > 0:
+                read = self._core._read
+                if n <= _WORD_RANGE:
+                    # Lemire's method, the same as _bounded, written out here to
+                    # save two function calls on every draw. A test compares the
+                    # two on the edge cases, so they cannot drift apart.
+                    m = int.from_bytes(read(_WORD_BYTES), "little") * n
+                    if (m & _MASK64) < n:
+                        threshold = (_WORD_RANGE - n) % n
+                        while (m & _MASK64) < threshold:
+                            m = int.from_bytes(read(_WORD_BYTES), "little") * n
+                    return m >> 64
+                return _bounded_wide(n, read)
+            if n == 0:
+                # Only choice() on an empty sequence gets here, and only on
+                # Python 3.8 to 3.10, which do not check the length first.
+                # IndexError is what choice() must raise on every version.
+                raise IndexError("Cannot choose from an empty sequence")
+            raise ValueError("n must be positive")
+
+        # No seed, no state.
+
+        def seed(self, a=None, version=2):
+            if a is not None:
+                raise NotImplementedError(
+                    "betterRandom cannot be seeded: its output is not reproducible"
+                )
+
+        def getstate(self):
+            raise NotImplementedError("betterRandom has no state")
+
+        def setstate(self, state):
+            raise NotImplementedError("betterRandom has no state")
+
+        def gauss(self, mu: float = 0.0, sigma: float = 1.0) -> float:
+            return self.normalvariate(mu, sigma)
+
+        # From betterRandom itself.
+
+        def randints(self, count: int, low: int = 0, high: int = 100) -> List[int]:
+            """Return count integers in [low, high], from a single OS call."""
+            return self._core.randints(count, low, high)
+
+    BetterSystemRandom.__module__ = __name__
+    return BetterSystemRandom
+
+
+def __getattr__(name: str):
+    """Create BetterSystemRandom and rng on first access (PEP 562)."""
+    if name in ("BetterSystemRandom", "rng"):
+        namespace = globals()
+        # setdefault keeps the first class that was built, so two threads that
+        # race here still end up sharing one class and one instance.
+        cls = namespace.setdefault("BetterSystemRandom", _build_system_random())
+        instance = namespace.setdefault("rng", cls())
+        return cls if name == "BetterSystemRandom" else instance
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 def main(argv: Optional[List[str]] = None) -> int:

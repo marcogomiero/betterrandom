@@ -11,7 +11,12 @@ import random
 import secrets
 import timeit
 
-from betterrandom import BetterRandom, better_random, better_random_many
+from betterrandom import (
+    BetterRandom,
+    BetterSystemRandom,
+    better_random,
+    better_random_many,
+)
 
 N = 100_000
 BATCH = 10_000
@@ -19,11 +24,12 @@ BATCH = 10_000
 paranoid = BetterRandom(paranoid=True)
 
 
-def bench(label, fn, per_call=1):
+def bench(label, fn, per_call=1, unit="number"):
     number = max(1, N // per_call)
     seconds = min(timeit.repeat(fn, number=number, repeat=3))
     per_item_us = seconds / (number * per_call) * 1e6
-    print(f"{label:<44} {per_item_us:7.2f} us/number  {1e6 / per_item_us:12,.0f} numbers/s")
+    rate = 1e6 / per_item_us
+    print(f"{label:<52} {per_item_us:7.2f} us/{unit}  {rate:12,.0f} {unit}s/s")
 
 
 if __name__ == "__main__":
@@ -47,5 +53,43 @@ if __name__ == "__main__":
     bench(
         "better_random_many (OS CSPRNG, one OS call)",
         lambda: better_random_many(BATCH, 1, 6),
+        per_call=BATCH,
+    )
+
+    # The whole random.Random API: the standard library's own OS backed class
+    # against the betterRandom one. Both are secure, the difference is speed.
+    print()
+    print("The random.Random API: SystemRandom against BetterSystemRandom")
+    system = random.SystemRandom()
+    std = BetterSystemRandom()
+    items = list(range(100))
+    bench("SystemRandom.randint(1, 6)", lambda: system.randint(1, 6))
+    bench("BetterSystemRandom.randint(1, 6)", lambda: std.randint(1, 6))
+    bench("SystemRandom.choice, 100 items", lambda: system.choice(items))
+    bench("BetterSystemRandom.choice, 100 items", lambda: std.choice(items))
+    bench(
+        "SystemRandom.shuffle, 100 items",
+        lambda: system.shuffle(items),
+        per_call=100,
+        unit="element",
+    )
+    bench(
+        "BetterSystemRandom.shuffle, 100 items",
+        lambda: std.shuffle(items),
+        per_call=100,
+        unit="element",
+    )
+    bench("SystemRandom.random()", lambda: system.random())
+    bench("BetterSystemRandom.random()", lambda: std.random())
+    bench("SystemRandom.gauss(0, 1)", lambda: system.gauss(0, 1))
+    bench("BetterSystemRandom.gauss(0, 1)", lambda: std.gauss(0, 1))
+    bench(
+        "SystemRandom.randint in a list comprehension",
+        lambda: [system.randint(1, 6) for _ in range(BATCH)],
+        per_call=BATCH,
+    )
+    bench(
+        "BetterSystemRandom.randints (one OS call)",
+        lambda: std.randints(BATCH, 1, 6),
         per_call=BATCH,
     )
