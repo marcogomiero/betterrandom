@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- `BetterSystemRandom`: faster single calls. The range reduction used by
+  `randint`, `randrange`, `choice`, `shuffle` and `sample` is now written out
+  inside `_randbelow`, which saves two function calls per draw. A test compares
+  it with the proven reduction on the edge cases, so the two cannot drift apart.
+
 ## 0.5.0 (first public release)
 
 ### Added
