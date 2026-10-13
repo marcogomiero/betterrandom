@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "betterrandom"
+version = "0.4.0"
+description = "Random integers, as random as Python can make them."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Marco Gomiero" }]
+keywords = ["random", "csprng", "entropy", "secrets", "shuffle"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Security :: Cryptography",
+]
+
+[project.urls]
+Homepage = "https://github.com/marcogomiero/betterRandom"
+Issues = "https://github.com/marcogomiero/betterRandom/issues"
+
+[project.scripts]
+betterrandom = "betterrandom:main"
+
+[tool.setuptools]
+py-modules = ["betterrandom"]
