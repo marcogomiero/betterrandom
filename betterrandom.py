@@ -76,12 +76,12 @@ __all__ = [
     "better_choices",
     "better_sample",
     "better_shuffle",
-    "BetterSystemRandom",
-    "rng",
+    "BetterSystemRandom",  # noqa: F822 (created on first use)
+    "rng",  # noqa: F822 (created on first use)
     "ENTROPY_SOURCES",
     "MISSING",
 ]
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 _WORD_BYTES = 8
 _WORD_RANGE = 1 << (8 * _WORD_BYTES)  # 2**64
